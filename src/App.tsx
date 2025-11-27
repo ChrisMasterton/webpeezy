@@ -23,6 +23,7 @@ interface ConvertedImage {
 interface QueuedImage {
   id: string
   file: File
+  originalPath?: string
   previewUrl: string
   status: 'pending' | 'converting' | 'done' | 'error'
   converted?: ConvertedImage
@@ -125,11 +126,12 @@ function App() {
     }
   }, [convertToWebP])
 
-  const handleFiles = useCallback((files: FileList | File[]) => {
+  const handleFiles = useCallback((files: FileList | File[], paths?: string[]) => {
     const imageFiles = Array.from(files).filter(f => f.type.startsWith('image/'))
-    const newImages: QueuedImage[] = imageFiles.map(file => ({
+    const newImages: QueuedImage[] = imageFiles.map((file, index) => ({
       id: crypto.randomUUID(),
       file,
+      originalPath: paths?.[index],
       previewUrl: URL.createObjectURL(file),
       status: 'pending',
     }))
@@ -157,16 +159,19 @@ function App() {
   }, [])
 
   const downloadImage = useCallback((converted: ConvertedImage) => {
+    const baseName = converted.originalName.replace(/\.[^.]+$/, '')
     const a = document.createElement('a')
     a.href = converted.previewUrl
-    const baseName = converted.originalName.replace(/\.[^.]+$/, '')
     a.download = `${baseName}.webp`
     a.click()
   }, [])
 
   const downloadAll = useCallback(() => {
-    queue.forEach(q => {
-      if (q.converted) downloadImage(q.converted)
+    const convertedItems = queue.filter(q => q.converted)
+    convertedItems.forEach((q, index) => {
+      setTimeout(() => {
+        if (q.converted) downloadImage(q.converted)
+      }, index * 100)
     })
   }, [queue, downloadImage])
 
@@ -357,7 +362,7 @@ function App() {
             </AnimatePresence>
 
             {queue.length > 0 && !isDragging && (
-              <div className="queue-container">
+              <div className="queue-container" onClick={(e) => e.stopPropagation()}>
                 <div className="queue-header">
                   <span className="queue-count">{completedCount}/{queue.length} CONVERTED</span>
                   {totalSaved > 0 && (
@@ -372,6 +377,7 @@ function App() {
                       initial={{ opacity: 0, x: -20 }}
                       animate={{ opacity: 1, x: 0 }}
                       transition={{ delay: index * 0.05 }}
+                      onClick={(e) => e.stopPropagation()}
                     >
                       <div className="queue-item-preview">
                         <img src={item.converted?.previewUrl || item.previewUrl} alt="" />

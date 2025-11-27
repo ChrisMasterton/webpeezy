@@ -231,6 +231,7 @@
   );
   opacity: 0;
   transition: opacity var(--transition-slow);
+  pointer-events: none;
 }
 
 .drop-zone:hover {
