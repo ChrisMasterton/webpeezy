@@ -239,7 +239,7 @@ function App() {
             <span className="logo-bracket">[</span>
             WEBP
             <span className="logo-dot">.</span>
-            CONVERT
+            EEZY
             <span className="logo-bracket">]</span>
           </h1>
           <span className="version">v1.0.0</span>
