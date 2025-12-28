@@ -64,6 +64,15 @@
   animation: pulse 2s ease-in-out infinite;
 }
 
+.status-indicator.processing .status-dot {
+  background: var(--warning);
+  box-shadow: 0 0 8px var(--warning);
+}
+
+.status-indicator.processing .status-text {
+  color: var(--warning);
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -395,6 +404,15 @@
   align-items: center;
   gap: 0.5rem;
   font-size: 0.7rem;
+}
+
+.queue-item-preset {
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 .size-original {

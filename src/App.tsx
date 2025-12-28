@@ -25,6 +25,7 @@ interface QueuedImage {
   file: File
   originalPath?: string
   previewUrl: string
+  preset: Preset
   status: 'pending' | 'converting' | 'done' | 'error'
   converted?: ConvertedImage
   error?: string
@@ -48,12 +49,19 @@ function App() {
   const [isDragging, setIsDragging] = useState(false)
   const [showPresetEditor, setShowPresetEditor] = useState(false)
   const [editingPreset, setEditingPreset] = useState<Preset | null>(null)
+  const [isProcessing, setIsProcessing] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const dropZoneRef = useRef<HTMLDivElement>(null)
+  const queueRef = useRef<QueuedImage[]>([])
+  const isProcessingRef = useRef(false)
 
   useEffect(() => {
     localStorage.setItem('webp-presets', JSON.stringify(presets))
   }, [presets])
+
+  useEffect(() => {
+    queueRef.current = queue
+  }, [queue])
 
   const convertToWebP = useCallback(async (file: File, preset: Preset): Promise<ConvertedImage> => {
     return new Promise((resolve, reject) => {
@@ -105,25 +113,38 @@ function App() {
     })
   }, [])
 
-  const processQueue = useCallback(async (images: QueuedImage[], preset: Preset) => {
-    for (const image of images) {
-      if (image.status !== 'pending') continue
+  const processQueue = useCallback(async () => {
+    if (isProcessingRef.current) return
+    isProcessingRef.current = true
+    setIsProcessing(true)
+
+    const processNext = async (): Promise<void> => {
+      const nextImage = queueRef.current.find(image => image.status === 'pending')
+      if (!nextImage) {
+        isProcessingRef.current = false
+        setIsProcessing(false)
+        return
+      }
 
       setQueue(prev => prev.map(q =>
-        q.id === image.id ? { ...q, status: 'converting' } : q
+        q.id === nextImage.id ? { ...q, status: 'converting' } : q
       ))
 
       try {
-        const converted = await convertToWebP(image.file, preset)
+        const converted = await convertToWebP(nextImage.file, nextImage.preset)
         setQueue(prev => prev.map(q =>
-          q.id === image.id ? { ...q, status: 'done', converted } : q
+          q.id === nextImage.id ? { ...q, status: 'done', converted } : q
         ))
       } catch (err) {
         setQueue(prev => prev.map(q =>
-          q.id === image.id ? { ...q, status: 'error', error: (err as Error).message } : q
+          q.id === nextImage.id ? { ...q, status: 'error', error: (err as Error).message } : q
         ))
       }
+
+      await processNext()
     }
+
+    await processNext()
   }, [convertToWebP])
 
   const handleFiles = useCallback((files: FileList | File[], paths?: string[]) => {
@@ -133,11 +154,16 @@ function App() {
       file,
       originalPath: paths?.[index],
       previewUrl: URL.createObjectURL(file),
+      preset: selectedPreset,
       status: 'pending',
     }))
 
-    setQueue(prev => [...prev, ...newImages])
-    processQueue(newImages, selectedPreset)
+    setQueue(prev => {
+      const nextQueue = [...prev, ...newImages]
+      queueRef.current = nextQueue
+      return nextQueue
+    })
+    processQueue()
   }, [selectedPreset, processQueue])
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -245,9 +271,9 @@ function App() {
           <span className="version">v1.0.0</span>
         </div>
         <div className="header-right">
-          <div className="status-indicator">
+          <div className={`status-indicator ${isProcessing ? 'processing' : ''}`}>
             <span className="status-dot" />
-            <span className="status-text">READY</span>
+            <span className="status-text">{isProcessing ? 'PROCESSING' : 'READY'}</span>
           </div>
         </div>
       </header>
@@ -385,6 +411,7 @@ function App() {
                       <div className="queue-item-info">
                         <span className="queue-item-name">{item.file.name}</span>
                         <div className="queue-item-meta">
+                          <span className="queue-item-preset">{item.preset.name}</span>
                           {item.status === 'done' && item.converted && (
                             <>
                               <span className="size-original">{formatBytes(item.converted.originalSize)}</span>
