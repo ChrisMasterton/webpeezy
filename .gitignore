@@ -32,3 +32,7 @@ src-tauri/target
 AGENTS.md
 agents.md
 claude.md
+cc-todo.md
+.cc-todo/cc-todo.log
+/.cc-todo/agent-markers.log
+/.cc-todo/cc-todo.db

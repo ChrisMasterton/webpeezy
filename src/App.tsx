@@ -8,6 +8,7 @@ interface Preset {
   maxWidth: number | null
   maxHeight: number | null
   quality: number
+  reducePercent: number
 }
 
 interface ConvertedImage {
@@ -31,19 +32,65 @@ interface QueuedImage {
   error?: string
 }
 
+const clamp = (value: number, min: number, max: number) => {
+  return Math.min(max, Math.max(min, value))
+}
+
+const normalizeDimension = (value: unknown) => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null
+  }
+  return Math.round(value)
+}
+
+const normalizePreset = (preset: Partial<Preset>): Preset => ({
+  id: typeof preset.id === 'string' && preset.id.trim() ? preset.id : crypto.randomUUID(),
+  name: typeof preset.name === 'string' ? preset.name : '',
+  maxWidth: normalizeDimension(preset.maxWidth),
+  maxHeight: normalizeDimension(preset.maxHeight),
+  quality: clamp(
+    typeof preset.quality === 'number' && Number.isFinite(preset.quality)
+      ? Math.round(preset.quality)
+      : 85,
+    1,
+    100
+  ),
+  reducePercent: clamp(
+    typeof preset.reducePercent === 'number' && Number.isFinite(preset.reducePercent)
+      ? Math.round(preset.reducePercent)
+      : 0,
+    0,
+    95
+  ),
+})
+
 const DEFAULT_PRESETS: Preset[] = [
-  { id: 'original', name: 'ORIGINAL', maxWidth: null, maxHeight: null, quality: 90 },
-  { id: 'large', name: '1920px', maxWidth: 1920, maxHeight: 1920, quality: 85 },
-  { id: 'medium', name: '1280px', maxWidth: 1280, maxHeight: 1280, quality: 85 },
-  { id: 'small', name: '800px', maxWidth: 800, maxHeight: 800, quality: 80 },
-  { id: 'thumb', name: '400px', maxWidth: 400, maxHeight: 400, quality: 75 },
+  { id: 'original', name: 'ORIGINAL', maxWidth: null, maxHeight: null, quality: 90, reducePercent: 0 },
+  { id: 'large', name: '1920px', maxWidth: 1920, maxHeight: 1920, quality: 85, reducePercent: 0 },
+  { id: 'medium', name: '1280px', maxWidth: 1280, maxHeight: 1280, quality: 85, reducePercent: 0 },
+  { id: 'small', name: '800px', maxWidth: 800, maxHeight: 800, quality: 80, reducePercent: 0 },
+  { id: 'thumb', name: '400px', maxWidth: 400, maxHeight: 400, quality: 75, reducePercent: 0 },
 ]
 
+const loadPresets = (): Preset[] => {
+  const saved = localStorage.getItem('webp-presets')
+  if (!saved) return DEFAULT_PRESETS
+
+  try {
+    const parsed = JSON.parse(saved)
+    if (!Array.isArray(parsed)) {
+      return DEFAULT_PRESETS
+    }
+
+    const normalizedPresets = parsed.map(preset => normalizePreset(preset as Partial<Preset>))
+    return normalizedPresets.length > 0 ? normalizedPresets : DEFAULT_PRESETS
+  } catch {
+    return DEFAULT_PRESETS
+  }
+}
+
 function App() {
-  const [presets, setPresets] = useState<Preset[]>(() => {
-    const saved = localStorage.getItem('webp-presets')
-    return saved ? JSON.parse(saved) : DEFAULT_PRESETS
-  })
+  const [presets, setPresets] = useState<Preset[]>(() => loadPresets())
   const [selectedPreset, setSelectedPreset] = useState<Preset>(presets[0])
   const [queue, setQueue] = useState<QueuedImage[]>([])
   const [isDragging, setIsDragging] = useState(false)
@@ -59,10 +106,6 @@ function App() {
     localStorage.setItem('webp-presets', JSON.stringify(presets))
   }, [presets])
 
-  useEffect(() => {
-    queueRef.current = queue
-  }, [queue])
-
   const convertToWebP = useCallback(async (file: File, preset: Preset): Promise<ConvertedImage> => {
     return new Promise((resolve, reject) => {
       const img = new Image()
@@ -71,6 +114,12 @@ function App() {
 
       img.onload = () => {
         let { width, height } = img
+
+        if (preset.reducePercent > 0) {
+          const ratio = (100 - preset.reducePercent) / 100
+          width = Math.max(1, Math.round(width * ratio))
+          height = Math.max(1, Math.round(height * ratio))
+        }
 
         if (preset.maxWidth || preset.maxHeight) {
           const maxW = preset.maxWidth || Infinity
@@ -126,19 +175,22 @@ function App() {
         return
       }
 
-      setQueue(prev => prev.map(q =>
-        q.id === nextImage.id ? { ...q, status: 'converting' } : q
-      ))
+      queueRef.current = queueRef.current.map(q =>
+        q.id === nextImage.id ? { ...q, status: 'converting' as const } : q
+      )
+      setQueue([...queueRef.current])
 
       try {
         const converted = await convertToWebP(nextImage.file, nextImage.preset)
-        setQueue(prev => prev.map(q =>
-          q.id === nextImage.id ? { ...q, status: 'done', converted } : q
-        ))
+        queueRef.current = queueRef.current.map(q =>
+          q.id === nextImage.id ? { ...q, status: 'done' as const, converted } : q
+        )
+        setQueue([...queueRef.current])
       } catch (err) {
-        setQueue(prev => prev.map(q =>
-          q.id === nextImage.id ? { ...q, status: 'error', error: (err as Error).message } : q
-        ))
+        queueRef.current = queueRef.current.map(q =>
+          q.id === nextImage.id ? { ...q, status: 'error' as const, error: (err as Error).message } : q
+        )
+        setQueue([...queueRef.current])
       }
 
       await processNext()
@@ -155,14 +207,12 @@ function App() {
       originalPath: paths?.[index],
       previewUrl: URL.createObjectURL(file),
       preset: selectedPreset,
-      status: 'pending',
+      status: 'pending' as const,
     }))
 
-    setQueue(prev => {
-      const nextQueue = [...prev, ...newImages]
-      queueRef.current = nextQueue
-      return nextQueue
-    })
+    const nextQueue = [...queueRef.current, ...newImages]
+    queueRef.current = nextQueue
+    setQueue(nextQueue)
     processQueue()
   }, [selectedPreset, processQueue])
 
@@ -202,22 +252,22 @@ function App() {
   }, [queue, downloadImage])
 
   const clearQueue = useCallback(() => {
-    queue.forEach(q => {
+    queueRef.current.forEach(q => {
       URL.revokeObjectURL(q.previewUrl)
       if (q.converted) URL.revokeObjectURL(q.converted.previewUrl)
     })
+    queueRef.current = []
     setQueue([])
-  }, [queue])
+  }, [])
 
   const removeFromQueue = useCallback((id: string) => {
-    setQueue(prev => {
-      const item = prev.find(q => q.id === id)
-      if (item) {
-        URL.revokeObjectURL(item.previewUrl)
-        if (item.converted) URL.revokeObjectURL(item.converted.previewUrl)
-      }
-      return prev.filter(q => q.id !== id)
-    })
+    const item = queueRef.current.find(q => q.id === id)
+    if (item) {
+      URL.revokeObjectURL(item.previewUrl)
+      if (item.converted) URL.revokeObjectURL(item.converted.previewUrl)
+    }
+    queueRef.current = queueRef.current.filter(q => q.id !== id)
+    setQueue([...queueRef.current])
   }, [])
 
   const formatBytes = (bytes: number) => {
@@ -231,13 +281,15 @@ function App() {
   }
 
   const savePreset = useCallback((preset: Preset) => {
+    const normalizedPreset = normalizePreset(preset)
     setPresets(prev => {
-      const exists = prev.find(p => p.id === preset.id)
+      const exists = prev.find(p => p.id === normalizedPreset.id)
       if (exists) {
-        return prev.map(p => p.id === preset.id ? preset : p)
+        return prev.map(p => p.id === normalizedPreset.id ? normalizedPreset : p)
       }
-      return [...prev, preset]
+      return [...prev, normalizedPreset]
     })
+    setSelectedPreset(prev => prev.id === normalizedPreset.id ? normalizedPreset : prev)
     setEditingPreset(null)
     setShowPresetEditor(false)
   }, [])
@@ -285,7 +337,14 @@ function App() {
             <button
               className="btn-icon"
               onClick={() => {
-                setEditingPreset({ id: crypto.randomUUID(), name: '', maxWidth: null, maxHeight: null, quality: 85 })
+                setEditingPreset({
+                  id: crypto.randomUUID(),
+                  name: '',
+                  maxWidth: null,
+                  maxHeight: null,
+                  quality: 85,
+                  reducePercent: 0
+                })
                 setShowPresetEditor(true)
               }}
               title="Add preset"
@@ -326,8 +385,48 @@ function App() {
               <span className="detail-value">{selectedPreset.maxHeight || '---'}</span>
             </div>
             <div className="detail-row">
-              <span className="detail-label">QUALITY:</span>
-              <span className="detail-value">{selectedPreset.quality}%</span>
+              <span className="detail-label">REDUCE_BY:</span>
+              <span className="detail-value">{selectedPreset.reducePercent}%</span>
+            </div>
+            <div className="quality-slider-group">
+              <label className="form-label">QUALITY: {selectedPreset.quality}%</label>
+              <input
+                className="form-slider"
+                type="range"
+                min="1"
+                max="100"
+                value={selectedPreset.quality}
+                onChange={(e) => {
+                  const quality = parseInt(e.target.value)
+                  const updated = { ...selectedPreset, quality }
+                  setSelectedPreset(updated)
+                  setPresets(prev => prev.map(p => p.id === updated.id ? updated : p))
+                }}
+              />
+              <div className="slider-labels">
+                <span>LOW</span>
+                <span>HIGH</span>
+              </div>
+            </div>
+            <div className="quality-slider-group">
+              <label className="form-label">REDUCE BY: {selectedPreset.reducePercent}%</label>
+              <input
+                className="form-slider"
+                type="range"
+                min="0"
+                max="95"
+                value={selectedPreset.reducePercent}
+                onChange={(e) => {
+                  const reducePercent = parseInt(e.target.value)
+                  const updated = { ...selectedPreset, reducePercent }
+                  setSelectedPreset(updated)
+                  setPresets(prev => prev.map(p => p.id === updated.id ? updated : p))
+                }}
+              />
+              <div className="slider-labels">
+                <span>NONE</span>
+                <span>MAX</span>
+              </div>
             </div>
           </div>
         </section>
@@ -563,6 +662,25 @@ function App() {
                   <div className="slider-labels">
                     <span>LOW</span>
                     <span>HIGH</span>
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">REDUCE BY: {editingPreset.reducePercent}%</label>
+                  <input
+                    className="form-slider"
+                    type="range"
+                    min="0"
+                    max="95"
+                    value={editingPreset.reducePercent}
+                    onChange={(e) => setEditingPreset({
+                      ...editingPreset,
+                      reducePercent: parseInt(e.target.value)
+                    })}
+                  />
+                  <div className="slider-labels">
+                    <span>NONE</span>
+                    <span>MAX</span>
                   </div>
                 </div>
               </div>

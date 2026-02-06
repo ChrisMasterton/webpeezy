@@ -205,6 +205,14 @@
   font-weight: 500;
 }
 
+/* Quality slider in control panel */
+.quality-slider-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.25rem;
+}
+
 /* Drop section */
 .drop-section {
   padding: 2rem;
