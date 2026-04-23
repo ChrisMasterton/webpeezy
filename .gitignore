@@ -36,3 +36,16 @@ cc-todo.md
 .cc-todo/cc-todo.log
 /.cc-todo/agent-markers.log
 /.cc-todo/cc-todo.db
+
+# Agent working state
+.agents/task-work-queue.md
+.agents/task-blocked.md
+.agents/current-task-plan.md
+
+# Agent-generated repo analysis
+.agents/repo-fingerprint.md
+
+# Review packet outputs
+.agents/review-packets/index.md
+.agents/review-packets/*.md
+!.agents/review-packets/TEMPLATE.md
