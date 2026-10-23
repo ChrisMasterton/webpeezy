@@ -309,38 +309,43 @@ const convertToWebP = async (file: File, preset: Preset): Promise<ConvertedImage
         }
       }
 
-      canvas.width = width
-      canvas.height = height
-      ctx.drawImage(img, 0, 0, width, height)
+      try {
+        canvas.width = width
+        canvas.height = height
+        ctx.drawImage(img, 0, 0, width, height)
 
-      canvas.toBlob(
-        (blob) => {
-          URL.revokeObjectURL(sourceUrl)
+        canvas.toBlob(
+          (blob) => {
+            URL.revokeObjectURL(sourceUrl)
 
-          if (!blob) {
-            reject(new Error('We could not create a WebP file for this image.'))
-            return
-          }
+            if (!blob) {
+              reject(new Error('We could not create a WebP file for this image.'))
+              return
+            }
 
-          const previewUrl = URL.createObjectURL(blob)
+            const previewUrl = URL.createObjectURL(blob)
 
-          resolve({
-            id: crypto.randomUUID(),
-            originalName: file.name,
-            originalSize: file.size,
-            convertedSize: blob.size,
-            blob,
-            previewUrl,
-            preset,
-            originalWidth,
-            originalHeight,
-            outputWidth: width,
-            outputHeight: height,
-          })
-        },
-        'image/webp',
-        preset.quality / 100
-      )
+            resolve({
+              id: crypto.randomUUID(),
+              originalName: file.name,
+              originalSize: file.size,
+              convertedSize: blob.size,
+              blob,
+              previewUrl,
+              preset,
+              originalWidth,
+              originalHeight,
+              outputWidth: width,
+              outputHeight: height,
+            })
+          },
+          'image/webp',
+          preset.quality / 100
+        )
+      } catch {
+        URL.revokeObjectURL(sourceUrl)
+        reject(new Error('We could not convert this image. Try exporting it as PNG or JPG first.'))
+      }
     }
 
     img.onerror = () => {
@@ -462,6 +467,10 @@ function App() {
   }
 
   const applyOutputDirectory = (nextDirectory: string | null) => {
+    if (nextDirectory === outputDirectory) {
+      return
+    }
+
     setOutputDirectory(nextDirectory)
     updateQueue((currentQueue) => resetSavedState(currentQueue))
   }
@@ -756,30 +765,32 @@ function App() {
         }
       }
 
+      let saveNotice: Notice
       if (saved > 0 && failed === 0) {
-        setNotice({
+        saveNotice = {
           kind: 'success',
           message: `Saved ${saved} image${saved === 1 ? '' : 's'} to ${truncatePath(targetDirectory)}.`,
-        })
+        }
       } else if (saved > 0) {
-        setNotice({
+        saveNotice = {
           kind: 'info',
           message: `Saved ${saved} image${saved === 1 ? '' : 's'}, but ${failed} still need${failed === 1 ? 's' : ''} attention.`,
-        })
+        }
       } else {
-        setNotice({
+        saveNotice = {
           kind: 'error',
           message: 'We could not save any converted images. Try choosing a different folder.',
-        })
+        }
       }
+      setNotice(saveNotice)
 
       if (saved > 0 && openFolderAfterSave) {
         try {
           await openPath(targetDirectory)
         } catch {
           setNotice({
-            kind: failed > 0 ? 'info' : 'success',
-            message: `Saved ${saved} image${saved === 1 ? '' : 's'} to ${truncatePath(targetDirectory)}.`,
+            kind: 'info',
+            message: `${saveNotice.message} The export folder could not be opened.`,
           })
         }
       }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { after, before, beforeEach, afterEach, test } from 'node:test'
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { chromium } from 'playwright'
@@ -62,7 +62,7 @@ const deferred = () => {
 
 // Exercise the real Tauri JS clients while substituting IPC with isolated file IO.
 // Native dialogs, permissions and platform filesystem behavior need a desktop run.
-const nativeExport = async ({ initialDirectory = directory, pick = async () => directory, write = writeFile } = {}) => {
+const nativeExport = async ({ initialDirectory = directory, pick = async () => directory, write = writeFile, openFolder = async () => {} } = {}) => {
   await page.exposeFunction('nativeInvoke', async (command, args, options) => {
     if (command === 'plugin:dialog|open') return pick()
     if (command === 'plugin:path|join') return join(...args.paths)
@@ -75,7 +75,7 @@ const nativeExport = async ({ initialDirectory = directory, pick = async () => d
     if (command === 'plugin:fs|write_file') {
       return write(decodeURIComponent(options.headers.path), Buffer.from(args))
     }
-    if (command === 'plugin:opener|open_path') return
+    if (command === 'plugin:opener|open_path') return openFolder(args.path)
     throw new Error(`Unexpected native command: ${command}`)
   })
   await page.addInitScript((initial) => {
@@ -123,6 +123,29 @@ test('thumbnail conversion keeps thin images at least one pixel and preserves no
     const output = await convertedOutput(index)
     assert.deepEqual([output.width, output.height, output.type], [...dimensions, 'image/webp'])
   }
+})
+
+test('an SVG that cannot be exported fails without stalling the next image', async () => {
+  await page.goto(baseURL)
+  const errors = []
+  page.on('pageerror', (error) => errors.push(error.message))
+  await upload({
+    name: 'embedded-html.svg',
+    mimeType: 'image/svg+xml',
+    buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="60"><foreignObject width="100" height="60"><div xmlns="http://www.w3.org/1999/xhtml">Hello</div></foreignObject></svg>'),
+  }, image('control.svg', 100, 60))
+  assert.equal(await page.locator('.queue-item.error').count(), 1)
+  assert.equal(await page.locator('.queue-item.done').count(), 1)
+  assert.match(await page.locator('.queue-item.error').innerText(), /PNG or JPG/)
+  assert.deepEqual(errors, [])
+  assert.equal(await page.getByRole('button', { name: 'Clear queue' }).isEnabled(), true)
+  const output = await convertedOutput(1)
+  assert.deepEqual([output.width, output.height, output.type], [100, 60, 'image/webp'])
+  const downloadEvent = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Download', exact: true }).click()
+  const download = await downloadEvent
+  assert.equal(download.suggestedFilename(), 'control.webp')
+  assert.deepEqual(await readFile(await download.path()), Buffer.from(output.bytes))
 })
 
 test('queue buttons support Enter and Space without opening the image picker', async () => {
@@ -262,6 +285,58 @@ test('retry after a partial save writes only the failed image', async () => {
   await page.getByRole('button', { name: 'Save 2 ready images', exact: true }).click()
   await page.getByText('Saved 1 image, but 1 still needs attention.', { exact: true }).waitFor()
   assert.deepEqual(await readdir(directory), ['first.webp'])
+  await page.getByRole('button', { name: 'Save 1 ready image', exact: true }).click()
+  await page.waitForFunction(() => [...document.querySelectorAll('.queue-status')].every((status) => status.textContent === 'Saved'))
+  assert.deepEqual((await readdir(directory)).sort(), ['first.webp', 'second.webp'])
+  assert.deepEqual(await readFile(join(directory, 'first.webp')), expected[0])
+  assert.deepEqual(await readFile(join(directory, 'second.webp')), expected[1])
+})
+
+test('reselecting the same export folder preserves saved items; a different folder allows export', async () => {
+  const otherDirectory = join(directory, 'other')
+  await mkdir(otherDirectory)
+  let chosenDirectory = directory
+  await nativeExport({ pick: async () => chosenDirectory })
+  await upload(image('photo.svg', 100, 60))
+  const expected = Buffer.from((await convertedOutput()).bytes)
+  await page.getByRole('button', { name: 'Save 1 ready image', exact: true }).click()
+  await page.locator('.queue-status').filter({ hasText: 'Saved' }).waitFor()
+  await page.getByRole('button', { name: 'Change folder' }).click()
+  await page.getByText(/^New exports will save to/).waitFor()
+  assert.equal(await page.locator('.queue-status').innerText(), 'Saved')
+  assert.equal(await page.getByRole('button', { name: 'Save 0 ready images', exact: true }).isDisabled(), true)
+  assert.deepEqual((await readdir(directory)).sort(), ['other', 'photo.webp'])
+  chosenDirectory = otherDirectory
+  await page.getByRole('button', { name: 'Change folder' }).click()
+  await page.locator('.queue-status').filter({ hasText: 'Ready' }).waitFor()
+  await page.getByRole('button', { name: 'Save 1 ready image', exact: true }).click()
+  await page.locator('.queue-status').filter({ hasText: 'Saved' }).waitFor()
+  assert.deepEqual(await readdir(otherDirectory), ['photo.webp'])
+  assert.deepEqual(await readFile(join(directory, 'photo.webp')), expected)
+  assert.deepEqual(await readFile(join(otherDirectory, 'photo.webp')), expected)
+})
+
+test('a failure to open the folder preserves partial-save warnings and successful files', async () => {
+  let failSecond = true
+  await nativeExport({
+    write: async (path, data) => {
+      if (failSecond && path.endsWith('second.webp')) throw new Error('Temporary write failure')
+      await writeFile(path, data)
+    },
+    openFolder: async () => { throw new Error('Folder opener unavailable') },
+  })
+  await upload(image('first.svg', 100, 60), image('second.svg', 50, 30))
+  const expected = await Promise.all([0, 1].map(async (index) => Buffer.from((await convertedOutput(index)).bytes)))
+  await page.getByRole('button', { name: 'Save 2 ready images', exact: true }).click()
+  await page.waitForFunction(() => {
+    const button = [...document.querySelectorAll('button')].find((entry) => entry.textContent === 'Save 1 ready image')
+    return button && !button.disabled
+  })
+  assert.match(await page.locator('.notice-copy').innerText(), /1 still needs attention/)
+  assert.match(await page.locator('.notice-copy').innerText(), /folder could not be opened/i)
+  assert.deepEqual(await readdir(directory), ['first.webp'])
+  assert.deepEqual(await readFile(join(directory, 'first.webp')), expected[0])
+  failSecond = false
   await page.getByRole('button', { name: 'Save 1 ready image', exact: true }).click()
   await page.waitForFunction(() => [...document.querySelectorAll('.queue-status')].every((status) => status.textContent === 'Saved'))
   assert.deepEqual((await readdir(directory)).sort(), ['first.webp', 'second.webp'])
