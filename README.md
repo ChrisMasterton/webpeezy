@@ -34,3 +34,20 @@ npm run tauri:dev
 # Build desktop app
 npm run tauri:build
 ```
+
+## Verification
+
+```bash
+# Install the browser once after npm install
+npx playwright install chromium
+
+npm test
+npm run build
+npm run lint
+```
+
+The browser regressions start their own local server and use isolated storage and
+temporary export folders. They check saved presets, image dimensions, downloaded
+bytes, keyboard actions, and export retries. Desktop export tests substitute the
+Tauri IPC layer with temporary file operations; native dialogs and permissions
+still require verification in the desktop app.

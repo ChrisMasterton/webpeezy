@@ -245,8 +245,8 @@ const sanitizeFileStem = (name: string) => {
 const createPresetDraft = (source?: Preset): Preset => ({
   id: crypto.randomUUID(),
   name: source?.name ? `${source.name} copy` : '',
-  maxWidth: source?.maxWidth ?? 1280,
-  maxHeight: source?.maxHeight ?? 1280,
+  maxWidth: source ? source.maxWidth : 1280,
+  maxHeight: source ? source.maxHeight : 1280,
   quality: source?.quality ?? 84,
   reducePercent: source?.reducePercent ?? 0,
 })
@@ -304,8 +304,8 @@ const convertToWebP = async (file: File, preset: Preset): Promise<ConvertedImage
         const ratio = Math.min(maxWidth / width, maxHeight / height)
 
         if (ratio < 1) {
-          width = Math.round(width * ratio)
-          height = Math.round(height * ratio)
+          width = Math.max(1, Math.round(width * ratio))
+          height = Math.max(1, Math.round(height * ratio))
         }
       }
 
@@ -378,6 +378,7 @@ function App() {
   const dropZoneRef = useRef<HTMLDivElement>(null)
   const queueRef = useRef<QueuedImage[]>([])
   const isProcessingRef = useRef(false)
+  const isExportingRef = useRef(false)
 
   const updateQueue = (updater: QueueStateUpdater) => {
     const nextQueue = typeof updater === 'function' ? updater(queueRef.current) : updater
@@ -675,6 +676,10 @@ function App() {
   }
 
   const exportItems = async (items: Array<QueuedImage & { converted: ConvertedImage }>, openFolderAfterSave: boolean) => {
+    if (isExportingRef.current) {
+      return
+    }
+
     if (items.length === 0) {
       setNotice({
         kind: 'info',
@@ -683,97 +688,104 @@ function App() {
       return
     }
 
-    if (!nativeExportAvailable) {
-      items.forEach((item, index) => {
-        window.setTimeout(() => {
-          downloadImage(item.converted)
-        }, index * 120)
-      })
-
-      setNotice({
-        kind: 'success',
-        message: `Downloaded ${items.length} converted image${items.length === 1 ? '' : 's'}.`,
-      })
-      return
-    }
-
-    let targetDirectory = outputDirectory
-    if (!targetDirectory) {
-      targetDirectory = await chooseOutputDirectory()
-    }
-
-    if (!targetDirectory) {
-      return
-    }
-
+    isExportingRef.current = true
     setSaveProgress({ current: 0, total: items.length })
 
-    let saved = 0
-    let failed = 0
-    const reservedNames = new Set<string>()
+    try {
+      if (!nativeExportAvailable) {
+        for (const [index, item] of items.entries()) {
+          if (index > 0) {
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 120))
+          }
 
-    for (const [index, item] of items.entries()) {
-      try {
-        const savedPath = await saveCompletedItem(item, targetDirectory, reservedNames)
-        saved += 1
+          downloadImage(item.converted)
+          setSaveProgress({ current: index + 1, total: items.length })
+        }
 
-        updateQueue((currentQueue) =>
-          currentQueue.map((entry) =>
-            entry.id === item.id
-              ? {
-                  ...entry,
-                  savedPath,
-                  saveError: undefined,
-                }
-              : entry
-          )
-        )
-      } catch (error) {
-        failed += 1
-
-        updateQueue((currentQueue) =>
-          currentQueue.map((entry) =>
-            entry.id === item.id
-              ? {
-                  ...entry,
-                  saveError: error instanceof Error ? error.message : 'This image could not be saved.',
-                }
-              : entry
-          )
-        )
-      } finally {
-        setSaveProgress({ current: index + 1, total: items.length })
-      }
-    }
-
-    setSaveProgress(null)
-
-    if (saved > 0 && failed === 0) {
-      setNotice({
-        kind: 'success',
-        message: `Saved ${saved} image${saved === 1 ? '' : 's'} to ${truncatePath(targetDirectory)}.`,
-      })
-    } else if (saved > 0) {
-      setNotice({
-        kind: 'info',
-        message: `Saved ${saved} image${saved === 1 ? '' : 's'}, but ${failed} still need${failed === 1 ? 's' : ''} attention.`,
-      })
-    } else {
-      setNotice({
-        kind: 'error',
-        message: 'We could not save any converted images. Try choosing a different folder.',
-      })
-    }
-
-    if (saved > 0 && openFolderAfterSave) {
-      try {
-        await openPath(targetDirectory)
-      } catch {
         setNotice({
-          kind: failed > 0 ? 'info' : 'success',
+          kind: 'success',
+          message: `Started downloading ${items.length} converted image${items.length === 1 ? '' : 's'}.`,
+        })
+        return
+      }
+
+      let targetDirectory = outputDirectory
+      if (!targetDirectory) {
+        targetDirectory = await chooseOutputDirectory()
+      }
+
+      if (!targetDirectory) {
+        return
+      }
+
+      let saved = 0
+      let failed = 0
+      const reservedNames = new Set<string>()
+
+      for (const [index, item] of items.entries()) {
+        try {
+          const savedPath = await saveCompletedItem(item, targetDirectory, reservedNames)
+          saved += 1
+
+          updateQueue((currentQueue) =>
+            currentQueue.map((entry) =>
+              entry.id === item.id
+                ? {
+                    ...entry,
+                    savedPath,
+                    saveError: undefined,
+                  }
+                : entry
+            )
+          )
+        } catch (error) {
+          failed += 1
+
+          updateQueue((currentQueue) =>
+            currentQueue.map((entry) =>
+              entry.id === item.id
+                ? {
+                    ...entry,
+                    saveError: error instanceof Error ? error.message : 'This image could not be saved.',
+                  }
+                : entry
+            )
+          )
+        } finally {
+          setSaveProgress({ current: index + 1, total: items.length })
+        }
+      }
+
+      if (saved > 0 && failed === 0) {
+        setNotice({
+          kind: 'success',
           message: `Saved ${saved} image${saved === 1 ? '' : 's'} to ${truncatePath(targetDirectory)}.`,
         })
+      } else if (saved > 0) {
+        setNotice({
+          kind: 'info',
+          message: `Saved ${saved} image${saved === 1 ? '' : 's'}, but ${failed} still need${failed === 1 ? 's' : ''} attention.`,
+        })
+      } else {
+        setNotice({
+          kind: 'error',
+          message: 'We could not save any converted images. Try choosing a different folder.',
+        })
       }
+
+      if (saved > 0 && openFolderAfterSave) {
+        try {
+          await openPath(targetDirectory)
+        } catch {
+          setNotice({
+            kind: failed > 0 ? 'info' : 'success',
+            message: `Saved ${saved} image${saved === 1 ? '' : 's'} to ${truncatePath(targetDirectory)}.`,
+          })
+        }
+      }
+    } finally {
+      isExportingRef.current = false
+      setSaveProgress(null)
     }
   }
 
@@ -934,10 +946,12 @@ function App() {
 
   if (saveProgress) {
     statusTone = 'saving'
-    statusTitle = `Saving ${saveProgress.current} of ${saveProgress.total}`
-    statusDescription = outputDirectory
-      ? `Writing files to ${getPathTail(outputDirectory)}.`
-      : 'Writing converted files to your chosen folder.'
+    statusTitle = `${nativeExportAvailable ? 'Saving' : 'Downloading'} ${saveProgress.current} of ${saveProgress.total}`
+    statusDescription = nativeExportAvailable
+      ? outputDirectory
+        ? `Writing files to ${getPathTail(outputDirectory)}.`
+        : 'Writing converted files to your chosen folder.'
+      : 'Preparing converted files for download.'
   } else if (isProcessing) {
     statusTone = 'processing'
     statusTitle = `Converting ${convertingPosition || completedCount + 1} of ${queue.length}`
@@ -1179,7 +1193,7 @@ function App() {
               </div>
 
               {nativeExportAvailable && (
-                <button className="btn-secondary btn-compact" onClick={() => void chooseOutputDirectory()}>
+                <button className="btn-secondary btn-compact" onClick={() => void chooseOutputDirectory()} disabled={Boolean(saveProgress)}>
                   {outputDirectory ? 'Change folder' : 'Choose folder'}
                 </button>
               )}
@@ -1196,7 +1210,7 @@ function App() {
                   <button className="btn-secondary btn-compact" onClick={() => void openExportFolder()}>
                     Open folder
                   </button>
-                  <button className="btn-secondary btn-compact" onClick={clearExportFolder}>
+                  <button className="btn-secondary btn-compact" onClick={clearExportFolder} disabled={Boolean(saveProgress)}>
                     Clear
                   </button>
                 </div>
@@ -1276,6 +1290,10 @@ function App() {
             onDragLeave={handleDragLeave}
             onClick={triggerFilePicker}
             onKeyDown={(event) => {
+              if (event.target !== event.currentTarget) {
+                return
+              }
+
               if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault()
                 triggerFilePicker()
@@ -1437,6 +1455,7 @@ function App() {
                               className="btn-secondary btn-compact"
                               type="button"
                               onClick={() => void saveSingleConverted(item.id)}
+                              disabled={Boolean(saveProgress)}
                             >
                               {nativeExportAvailable ? 'Save' : 'Download'}
                             </button>
@@ -1456,6 +1475,7 @@ function App() {
                             className="btn-secondary btn-compact"
                             type="button"
                             onClick={() => removeFromQueue(item.id)}
+                            disabled={Boolean(saveProgress)}
                             aria-label={`Remove ${item.file.name} from the queue`}
                           >
                             Remove
