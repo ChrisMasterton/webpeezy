@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
+import { invoke } from '@tauri-apps/api/core'
 import { join } from '@tauri-apps/api/path'
 import { open } from '@tauri-apps/plugin-dialog'
 import { exists, writeFile } from '@tauri-apps/plugin-fs'
@@ -315,7 +316,7 @@ const convertToWebP = async (file: File, preset: Preset): Promise<ConvertedImage
         ctx.drawImage(img, 0, 0, width, height)
 
         canvas.toBlob(
-          (blob) => {
+          async (blob) => {
             URL.revokeObjectURL(sourceUrl)
 
             if (!blob) {
@@ -323,14 +324,37 @@ const convertToWebP = async (file: File, preset: Preset): Promise<ConvertedImage
               return
             }
 
-            const previewUrl = URL.createObjectURL(blob)
+            let webpBlob = blob
+            if (blob.type !== 'image/webp') {
+              if (!isTauriRuntime()) {
+                reject(new Error('This browser cannot create WebP files. Please use the desktop app.'))
+                return
+              }
+
+              try {
+                const pixels = ctx.getImageData(0, 0, width, height).data
+                const encoded = await invoke<ArrayBuffer>('encode_webp', new Uint8Array(pixels.buffer), {
+                  headers: {
+                    'x-image-width': String(width),
+                    'x-image-height': String(height),
+                    'x-image-quality': String(preset.quality),
+                  },
+                })
+                webpBlob = new Blob([encoded], { type: 'image/webp' })
+              } catch (error) {
+                reject(new Error(typeof error === 'string' ? error : 'We could not create a WebP file for this image.'))
+                return
+              }
+            }
+
+            const previewUrl = URL.createObjectURL(webpBlob)
 
             resolve({
               id: crypto.randomUUID(),
               originalName: file.name,
               originalSize: file.size,
-              convertedSize: blob.size,
-              blob,
+              convertedSize: webpBlob.size,
+              blob: webpBlob,
               previewUrl,
               preset,
               originalWidth,
@@ -1310,9 +1334,9 @@ function App() {
                 triggerFilePicker()
               }
             }}
-            role="button"
-            tabIndex={0}
-            aria-label="Add images to convert"
+            role={queue.length === 0 ? 'button' : undefined}
+            tabIndex={queue.length === 0 ? 0 : undefined}
+            aria-label={queue.length === 0 ? 'Add images to convert' : undefined}
           >
             <input
               ref={fileInputRef}

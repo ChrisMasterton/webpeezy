@@ -148,6 +148,63 @@ test('an SVG that cannot be exported fails without stalling the next image', asy
   assert.deepEqual(await readFile(await download.path()), Buffer.from(output.bytes))
 })
 
+test('a desktop webview without WebP canvas support uses binary native encoding and can retry', async () => {
+  await nativeExport()
+  await page.evaluate(() => {
+    const toBlob = HTMLCanvasElement.prototype.toBlob
+    HTMLCanvasElement.prototype.toBlob = function (callback) { toBlob.call(this, callback, 'image/png') }
+    const invoke = window.__TAURI_INTERNALS__.invoke
+    window.encodingCalls = []
+    window.__TAURI_INTERNALS__.invoke = async (command, args, options) => {
+      if (command !== 'encode_webp') return invoke(command, args, options)
+      const headers = options.headers
+      window.encodingCalls.push({ headers, binary: args instanceof Uint8Array, length: args.length })
+      if (window.encodingCalls.length === 1) return Promise.reject('Native encoder temporarily unavailable')
+      // Substitute only the encoder; real desktop coverage exercises libwebp.
+      const canvas = document.createElement('canvas')
+      canvas.width = Number(headers['x-image-width'])
+      canvas.height = Number(headers['x-image-height'])
+      canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(args), canvas.width, canvas.height), 0, 0)
+      const blob = await new Promise((resolve) => toBlob.call(canvas, resolve, 'image/webp', Number(headers['x-image-quality']) / 100))
+      return blob.arrayBuffer()
+    }
+  })
+  await page.getByLabel('Max width', { exact: true }).fill('50')
+  await page.getByLabel('Quality', { exact: true }).press('End')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await upload(image('photo.svg', 100, 60))
+  assert.equal(await page.locator('.queue-item.error').count(), 1)
+  assert.match(await page.locator('.queue-item.error').innerText(), /Native encoder temporarily unavailable/)
+  await page.getByRole('button', { name: 'Retry', exact: true }).click()
+  await page.locator('.queue-item.done').waitFor()
+  const output = await convertedOutput()
+  assert.deepEqual([output.width, output.height, output.type], [50, 30, 'image/webp'])
+  const calls = await page.evaluate(() => window.encodingCalls)
+  assert.equal(calls.length, 2)
+  for (const call of calls) assert.deepEqual(call, {
+    headers: { 'x-image-width': '50', 'x-image-height': '30', 'x-image-quality': '100' },
+    binary: true, length: 50 * 30 * 4,
+  })
+  await page.getByRole('button', { name: 'Save 1 ready image', exact: true }).click()
+  await page.locator('.queue-status').filter({ hasText: 'Saved' }).waitFor()
+  const saved = await readFile(join(directory, 'photo.webp'))
+  assert.equal(saved.toString('ascii', 0, 4), 'RIFF')
+  assert.equal(saved.toString('ascii', 8, 12), 'WEBP')
+  assert.deepEqual(saved, Buffer.from(output.bytes))
+})
+
+test('a browser without WebP canvas support reports failure instead of exporting a disguised PNG', async () => {
+  await page.goto(baseURL)
+  await page.evaluate(() => {
+    const toBlob = HTMLCanvasElement.prototype.toBlob
+    HTMLCanvasElement.prototype.toBlob = function (callback) { toBlob.call(this, callback, 'image/png') }
+  })
+  await upload(image('photo.svg', 100, 60))
+  assert.equal(await page.locator('.queue-item.done').count(), 0)
+  assert.equal(await page.locator('.queue-item.error').count(), 1)
+  assert.match(await page.locator('.queue-item.error').innerText(), /This browser cannot create WebP files/)
+})
+
 test('queue buttons support Enter and Space without opening the image picker', async () => {
   await page.goto(baseURL)
   await upload(image('photo.svg', 100, 60), image('other.svg', 50, 30))

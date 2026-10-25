@@ -12,7 +12,10 @@
     "fs:allow-read-file",
     "fs:allow-write-file",
     "opener:default",
-    "opener:allow-open-path",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "**" }]
+    },
     {
       "identifier": "fs:scope",
       "allow": [
